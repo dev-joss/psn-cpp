@@ -24,19 +24,15 @@ THE SOFTWARE.
 */
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-#ifndef UDP_SOCKET_H
-#define UDP_SOCKET_H
+#ifndef UDP_SOCKET_POSIX_H
+#define UDP_SOCKET_POSIX_H
 
-// Platform detection - include appropriate implementation
-#ifdef _WIN32
-
-// Windows implementation
-#include <WinSock2.h>
-#include <Ws2tcpip.h>
-
-#pragma message("Note: including lib: Ws2_32.lib")
-#pragma comment(lib, "Ws2_32.lib")
-
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstring>
 #include <string>
 
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
@@ -46,16 +42,15 @@ class wsa_session
 
     wsa_session()
     {
-        WSAStartup( MAKEWORD( 2 , 2 ) , &data_ ) ;
+        // No initialization needed on POSIX systems
     }
     ~wsa_session()
     {
-        WSACleanup() ;
+        // No cleanup needed on POSIX systems
     }
 
   private :
-
-    WSAData data_ ;
+    // Empty on POSIX
 } ;
 
 //::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
@@ -68,27 +63,32 @@ class udp_socket
 		// UDP socket
 		socket_ = socket( AF_INET , SOCK_DGRAM , IPPROTO_UDP ) ;
 
-		// non blocking socket
-		u_long arg = 1 ;
-		ioctlsocket( socket_ , FIONBIO , &arg ) ;
+		if ( socket_ >= 0 )
+		{
+			// Set non-blocking mode
+			int flags = fcntl( socket_ , F_GETFL , 0 ) ;
+			fcntl( socket_ , F_SETFL , flags | O_NONBLOCK ) ;
+		}
 	}
 
 	~udp_socket( void )
 	{
-		closesocket( socket_ ) ;
+		if ( socket_ >= 0 )
+		{
+			close( socket_ ) ;
+		}
 	}
 
 	bool send_message( const std::string & address , unsigned short port , const ::std::string & message )
     {
         sockaddr_in add ;
+        std::memset( &add , 0 , sizeof( add ) ) ;
         add.sin_family = AF_INET ;
-        InetPton( AF_INET , address.c_str() , &add.sin_addr.s_addr ) ;
+        inet_pton( AF_INET , address.c_str() , &add.sin_addr.s_addr ) ;
         add.sin_port = htons( port ) ;
 
-		if ( sendto( socket_ , message.c_str() , (int)message.length() , 0 , reinterpret_cast<SOCKADDR *>( &add ) , sizeof( add ) ) > 0 )
-			return true ;
-
-		return false ;
+		ssize_t sent = sendto( socket_ , message.c_str() , message.length() , 0 , reinterpret_cast<sockaddr *>( &add ) , sizeof( add ) ) ;
+		return ( sent > 0 ) ;
     }
 
     bool receive_message( ::std::string & message , int max_size = 1500 )
@@ -98,7 +98,7 @@ class udp_socket
 
 		char * buffer = (char *)malloc( max_size ) ;
 
-        int byte_recv = recv( socket_ , buffer , max_size , 0 ) ;
+        ssize_t byte_recv = recv( socket_ , buffer , max_size , 0 ) ;
 
 		if ( byte_recv > 0 )
 			message = ::std::string( buffer , byte_recv ) ;
@@ -111,11 +111,12 @@ class udp_socket
     bool bind( unsigned short port )
     {
         sockaddr_in add ;
+        std::memset( &add , 0 , sizeof( add ) ) ;
         add.sin_family = AF_INET ;
         add.sin_addr.s_addr = htonl( INADDR_ANY ) ;
         add.sin_port = htons( port ) ;
 
-		if ( ::bind( socket_ , reinterpret_cast<SOCKADDR *>( &add ) , sizeof( add ) ) != SOCKET_ERROR )
+		if ( ::bind( socket_ , reinterpret_cast<sockaddr *>( &add ) , sizeof( add ) ) == 0 )
 			return true ;
 
 		return false ;
@@ -131,14 +132,15 @@ class udp_socket
 						   IP_MULTICAST_IF ,
 						   (const char*)&add ,
 						   sizeof( add ) ) ;
-		return ( result != SOCKET_ERROR ) ;
+		return ( result == 0 ) ;
 	}
 
 	bool join_multicast_group( const ::std::string & ip_group )
 	{
 		struct ip_mreq imr;
+        std::memset( &imr , 0 , sizeof( imr ) ) ;
 
-        InetPton( AF_INET , ip_group.c_str() , &imr.imr_multiaddr.s_addr ) ;
+        inet_pton( AF_INET , ip_group.c_str() , &imr.imr_multiaddr.s_addr ) ;
 		imr.imr_interface.s_addr = INADDR_ANY ;
 
 		int result = setsockopt( socket_ ,
@@ -146,14 +148,15 @@ class udp_socket
 						   IP_ADD_MEMBERSHIP ,
 						   (char*) &imr ,
 						   sizeof(struct ip_mreq) ) ;
-		return ( result != SOCKET_ERROR ) ;
+		return ( result == 0 ) ;
 	}
 
 	bool leave_multicast_group( const ::std::string & ip_group )
 	{
 		struct ip_mreq imr;
+        std::memset( &imr , 0 , sizeof( imr ) ) ;
 
-        InetPton( AF_INET , ip_group.c_str() , &imr.imr_multiaddr.s_addr ) ;
+        inet_pton( AF_INET , ip_group.c_str() , &imr.imr_multiaddr.s_addr ) ;
 		imr.imr_interface.s_addr = INADDR_ANY ;
 
 		int result = setsockopt( socket_ ,
@@ -161,19 +164,12 @@ class udp_socket
 						   IP_DROP_MEMBERSHIP ,
 						   (char*) &imr ,
 						   sizeof(struct ip_mreq) ) ;
-		return ( result != SOCKET_ERROR ) ;
+		return ( result == 0 ) ;
 	}
 
   private :
 
-	SOCKET		socket_ ;
+	int		socket_ ;
 } ;
-
-#else
-
-// POSIX implementation (macOS, Linux, etc.)
-#include "udp_socket_posix.h"
-
-#endif
 
 #endif
